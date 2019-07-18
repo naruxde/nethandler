@@ -19,6 +19,16 @@ SYS_EXIT = b'\x01\x06\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x17'
 SYS_FLST = b'\x01\x06L\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x17'
 
 
+class CallSave:
+
+    def __init__(self, sucess: bool, value: object):
+        self.value = value
+        self.success = sucess
+
+    def __bool__(self):
+        return self.success
+
+
 class CmdClient(Thread):
 
     """Network command client."""
@@ -179,6 +189,23 @@ class CmdClient(Thread):
                 raise
 
         return rc
+
+    def call_save(self, command: str, *args, **kwargs):
+        """Call a function on command server without raising an exception.
+
+        This function returns an <class 'CallSave'> object. If the success
+        status is True, the value will be the returned value, if False
+        the exception is put to value property.
+
+        :param command: Command name on server
+        :param args: Arguments to send
+        :param kwargs: Keyword arguments to send
+        :return: CallSave object with returned value or an exception
+        """
+        try:
+            return CallSave(True, self.call(command, *args, **kwargs))
+        except Exception as e:
+            return CallSave(False, e)
 
     def connect(self):
         """Connect to server and start processing commands."""
