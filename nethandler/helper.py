@@ -3,6 +3,10 @@
 __author__ = "Sven Sager"
 __copyright__ = "Copyright (C) 2019 Sven Sager"
 __license__ = "GPLv3"
+from logging import getLogger
+from socket import socket
+from threading import Event
+log = getLogger()
 
 
 def acheck(check_type, **kwargs):
@@ -25,3 +29,49 @@ def acheck(check_type, **kwargs):
                 " or <class 'NoneType'>" if none_okay else ""
             )
             raise TypeError(msg)
+
+
+def recv_data(connection: socket, length: int, cancel_event=Event()):
+    """Receive defined amount of data from socket.
+
+    :param connection: Socket connection to receive data from
+    :param length: Length to receive
+    :param cancel_event: Cancel receiving data if event is set
+    :return: Received bytes or None
+    """
+
+    # Shortcut for zero length
+    if length == 0:
+        return b''
+
+    log.debug(
+        "enter helper.recv_data length={0}"
+        "".format(length)
+    )
+
+    data = bytearray()
+    position = 0
+    while not (position == length or cancel_event.is_set()):
+        buff = connection.recv(length - position)
+        if buff == b'':
+            break
+        position += len(buff)
+        data += buff
+
+    log.debug(
+        "leave helper.recv_data got {0} bytes of {1} requested"
+        "".format(position, length)
+    )
+
+    if length == position:
+        return bytes(data)
+
+    if cancel_event.is_set():
+        raise RuntimeError(
+            "receive data aborted with cancel event"
+        )
+
+    raise RuntimeError(
+        "received {0} bytes of requested {1}"
+        "".format(position, length)
+    )

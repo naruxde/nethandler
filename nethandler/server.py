@@ -4,13 +4,14 @@ __author__ = "Sven Sager"
 __copyright__ = "Copyright (C) 2019 Sven Sager"
 __license__ = "GPLv3"
 import socket
+import struct
 from logging import getLogger
 from pickle import dumps, loads
 from threading import Event, Thread
 from timeit import default_timer
 
 from .acl import AclBase
-from .helper import acheck
+from .helper import acheck, recv_data
 
 log = getLogger()
 
@@ -52,10 +53,10 @@ class CmdServer(Thread):
         self._so = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._th_clients = []
 
-    def change_ip_acl(self, new_ip_acl: AclBase):
+    def change_acl(self, new_acl: AclBase):
         """Change ip acl and check all connected clients."""
-        acheck(AclBase, new_ip_acl=new_ip_acl)
-        self.__ip_acl = new_ip_acl
+        acheck(AclBase, new_acl=new_acl)
+        self.__ip_acl = new_acl
 
         for client in self._th_clients:                                     # type: CmdConnection
             ip = client.address
@@ -180,34 +181,33 @@ class CmdConnection(Thread):
 
         # Send exception to client
         b_ex = dumps(ex)
-        self.__con.send(
-            b'\x01\x06E' +
-            len(b_ex).to_bytes(4, byteorder="little") +
-            b'\x00\x00\x00\x00\x00\x00\x00\x00\x17' +
-            b_ex
-        )
-
-    def __handle_data(self, length: int):
-        data = bytearray()
-        position = 0
-        while not (position == length or self.__evt_exit.is_set()):
-            block = length - position
-            buff = self.__con.recv(block)
-            if buff == b'':
-                break
-            position += len(buff)
-            data += buff
-
-        return bytes(data)
+        self.__con.sendall(struct.pack(
+            "<s2sI8ss", b'\x01',
+            b'\x06E',
+            len(b_ex),
+            b'\x00' * 8, b'\x17'
+        ) + b_ex)
 
     def __handle_response(self, status: bool, payload=b''):
-        b_status = b'\x06O' if status else b'\x06E'
-        self.__con.sendall(
-            b'\x01' + b_status +
-            len(payload).to_bytes(4, byteorder="little") +
-            b'\x00\x00\x00\x00\x00\x00\x00\x00\x17' +
-            payload
-        )
+        do_log = len(payload) > 0
+        if do_log:
+            log.debug(
+                "enter __handle_response status={0} len(payload)={1}"
+                "".format(status, len(payload))
+            )
+
+        self.__con.sendall(struct.pack(
+            "<s2sI8ss", b'\x01',
+            b'\x06O' if status else b'\x06E',
+            len(payload),
+            b'\x00' * 8, b'\x17'
+        ) + payload)
+
+        if do_log:
+            log.debug(
+                "leave __handle_response status={0} len(payload)={1}"
+                "".format(status, len(payload))
+            )
 
     def run(self):
         """Execute the requests of client."""
@@ -231,19 +231,19 @@ class CmdConnection(Thread):
 
             # Receive full command or disconnect
             try:
+                # bCM000000000000b = 16
                 net_cmd = self.__con.recv(16)
+                if not net_cmd:
+                    break
+                p_start, cmd, payload, p_end = struct.unpack("<s2s12ss", net_cmd)
             except Exception as e:
                 log.exception(e)
                 break
 
             # Check received net command or disconnect
-            if net_cmd[0:1] != b'\x01' or net_cmd[-1:] != b'\x17':
-                if net_cmd != b'':
-                    log.error("net cmd not valid {0}".format(net_cmd))
+            if not (p_start == b'\x01' and p_end == b'\x17'):
+                log.error("net cmd not valid {0}".format(net_cmd))
                 break
-
-            # bCM000000000000b = 16
-            cmd = net_cmd[1:3]
 
             if cmd == b'\x06\x16':
                 # Synchronous idle
@@ -254,7 +254,7 @@ class CmdConnection(Thread):
                 # bCMii0000000000b = 16
 
                 try:
-                    timeout_ms = int.from_bytes(net_cmd[3:5], byteorder="little")
+                    timeout_ms, blob = struct.unpack("<H10s", payload)
                 except Exception as e:
                     self.__handle_exception(e)
                     break
@@ -268,11 +268,9 @@ class CmdConnection(Thread):
 
             elif cmd == b'\x06F':
                 # Call a function of CmdHandler
-                # bCMiiiiiiiiiiiib = 16
+                # bCMcaaaakkkk000b = 16
                 try:
-                    len_command = int.from_bytes(net_cmd[3:7], byteorder="little")
-                    len_args = int.from_bytes(net_cmd[7:11], byteorder="little")
-                    len_kwargs = int.from_bytes(net_cmd[11:15], byteorder="little")
+                    len_command, len_args, len_kwargs, blob = struct.unpack("<BII3s", payload)
                 except Exception as e:
                     self.__handle_exception(e)
                     continue
@@ -282,17 +280,18 @@ class CmdConnection(Thread):
 
                 # Process payload
                 try:
-                    command = self.__con.recv(len_command).decode("ASCII")
-                    args = () if len_args == 0 else loads(self.__handle_data(len_args))
-                    kwargs = {} if len_kwargs == 0 else loads(self.__handle_data(len_kwargs))
-                except Exception as e:
-                    self.__handle_exception(e)
-                    continue
+                    b_command = recv_data(self.__con, len_command, self.__evt_exit)
+                    b_args = recv_data(self.__con, len_args, self.__evt_exit)
+                    b_kwargs = recv_data(self.__con, len_kwargs, self.__evt_exit)
 
-                # Search and call user function of Handler
-                try:
+                    command = b_command.decode("ASCII")
+                    args = () if len_args == 0 else loads(b_args)
+                    kwargs = {} if len_kwargs == 0 else loads(b_kwargs)
+
+                    # Search and call user function of Handler
                     func = getattr(self.__cmd, command)
                     rc = func(self.__acl, *args, **kwargs)
+
                 except Exception as e:
                     self.__handle_exception(e)
                     continue
@@ -306,8 +305,8 @@ class CmdConnection(Thread):
             elif cmd == b'\x06L':
                 # Get function list of handler
                 lst = []
-                for func in dir(self.__cmd):
-                    if func.find("_") == -1:
+                for func in self.__cmd.__class__.__dict__:
+                    if func.find("_") != 0:
                         lst.append(func)
                 self.__handle_response(True, dumps(lst))
 
