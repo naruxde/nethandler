@@ -9,10 +9,10 @@ from enum import Enum
 from logging import getLogger
 from pickle import dumps, loads
 from threading import Event, Thread
-from timeit import default_timer
+from time import time
 
 from .acl import AclBase
-from .helper import acheck, recv_data
+from .helper import CmdClient, acheck, recv_data
 
 log = getLogger()
 
@@ -25,10 +25,10 @@ class RegisterType(Enum):
 
 class CmdHandler:
 
-    def connect(self, client_ip: str, client_port: int, client_acl: int):
+    def connect(self, client: CmdClient):
         return True
 
-    def disconnect(self, client_ip: str, client_port: int, clean: bool):
+    def disconnect(self, client: CmdClient, clean: bool):
         pass
 
 
@@ -196,6 +196,7 @@ class CmdConnection(Thread):
         self.__cmd = cmd_handler()
         self.__con = client_socket
         self.__connected = True
+        self.__connected_since = time()
         self.__evt_exit = Event()
         self.__timeout = timeout
 
@@ -245,7 +246,8 @@ class CmdConnection(Thread):
         # Starting connection handling
         try:
             # Call user function for connect event
-            if not self.__cmd.connect(self.__addr, self.__port, self.__acl):
+            client = CmdClient(self.__addr, self.__port, self.__acl, self.__connected_since)
+            if not self.__cmd.connect(client):
                 log.warning("connect function does not return True - disconnect")
                 self.__evt_exit.set()
         except Exception as e:
@@ -255,7 +257,7 @@ class CmdConnection(Thread):
         dirty = True
         while not self.__evt_exit.is_set():
             # Start calculating runtime
-            ot = default_timer()
+            ot = time()
 
             # Receive full command or disconnect
             try:
@@ -323,7 +325,10 @@ class CmdConnection(Thread):
                             "".format(self.__cmd.__class__.__name__, command)
                         )
                     func = getattr(self.__cmd, command)
-                    rc = func(self.__acl, *args, **kwargs)
+                    rc = func(
+                        CmdClient(self.__addr, self.__port, self.__acl, self.__connected_since),
+                        *args, **kwargs
+                    )
 
                 except Exception as e:
                     self.__handle_exception(e)
@@ -355,7 +360,7 @@ class CmdConnection(Thread):
 
             # Calculate process time
             # FIXME: Wird bei Zeitänderung immer aufgerufen
-            com_time = default_timer() - ot
+            com_time = time() - ot
             if com_time > self.__timeout:
                 log.warning("runtime more than {0} ms: {1}!".format(
                     int(self.__timeout * 1000), int(com_time * 1000)
@@ -364,7 +369,9 @@ class CmdConnection(Thread):
 
         # Call clean up function
         try:
-            self.__cmd.disconnect(self.__addr, self.__port, dirty)
+            self.__cmd.disconnect(
+                CmdClient(self.__addr, self.__port, self.__acl, self.__connected_since), dirty
+            )
             if dirty:
                 log.error("dirty shutdown of connection")
         except Exception as e:

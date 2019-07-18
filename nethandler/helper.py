@@ -6,7 +6,26 @@ __license__ = "GPLv3"
 from logging import getLogger
 from socket import socket
 from threading import Event
+from time import time
 log = getLogger()
+
+
+class CmdClient:
+
+    __slots__ = "connected_since", "acl", "ip", "port"
+
+    def __init__(self, ip: str, port: int, acl: int, connected_since):
+        self.acl = acl
+        self.connected_since = connected_since
+        self.ip = ip
+        self.port = port
+
+    def __str__(self):
+        return self.ip
+
+    @property
+    def connection_time(self):
+        return time() - self.connected_since
 
 
 def acheck(check_type, **kwargs):
