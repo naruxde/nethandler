@@ -26,7 +26,7 @@ class CmdClient(Thread):
     # TODO: __slots__ =
 
     def __init__(self, ip: str, port: int, timeout_ms=5000):
-        """Init NetFH-class.
+        """Init CmdClient-class.
         :param ip: IP address of server
         :param port: Server port to connect to
         :param timeout_ms: Timeout value in milliseconds 100 - 65535
@@ -171,9 +171,11 @@ class CmdClient(Thread):
                 self.__con.sendall(b_command + b_args + b_kwargs)
                 rc = self.__handle_response()
 
-            except Exception:
+            except socket.error:
                 self.__sock_err = True
                 self.__sock_run.set()
+                raise
+            except Exception:
                 raise
 
         return rc

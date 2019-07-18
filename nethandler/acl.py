@@ -106,7 +106,7 @@ class AclIp(AclBase):
 
     __slots__ = "__dict_acl", "__min_level", "__max_level"
 
-    def __init__(self, min_level=0, max_level=0):
+    def __init__(self, min_level=0, max_level=0, acl_file=""):
         super(AclIp, self).__init__()
 
         acheck(
@@ -120,6 +120,9 @@ class AclIp(AclBase):
         self.__dict_acl = {}
         self.__min_level = min_level
         self.__max_level = max_level
+
+        if acl_file:
+            self.load_file(acl_file)
 
     def add_acl(self, host_or_net_ip: str, acl_level: int):
         acheck(int, acl_level=acl_level)

@@ -5,6 +5,7 @@ __copyright__ = "Copyright (C) 2019 Sven Sager"
 __license__ = "GPLv3"
 import socket
 import struct
+from enum import Enum
 from logging import getLogger
 from pickle import dumps, loads
 from threading import Event, Thread
@@ -16,15 +17,18 @@ from .helper import acheck, recv_data
 log = getLogger()
 
 
+class RegisterType(Enum):
+    USER = "user"
+    CONNECT = "connect"
+    DISCONNECT = "disconnect"
+
+
 class CmdHandler:
 
     def connect(self, client_ip: str, client_port: int, client_acl: int):
         return True
 
-    def disconnect_clean(self, client_ip: str, client_port: int):
-        pass
-
-    def disconnect_dirty(self, client_ip: str, client_port: int):
+    def disconnect(self, client_ip: str, client_port: int, clean: bool):
         pass
 
 
@@ -53,6 +57,21 @@ class CmdServer(Thread):
         self._so = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._th_clients = []
 
+    def __register_function(self, register: RegisterType, function: type, name=""):
+        if self.is_alive():
+            raise RuntimeError("can not register functions after server start")
+        if not type(self._cmd_handler) != CmdHandler:
+            raise RuntimeError("can not add functions to inherited cmd handler")
+        if not callable(function):
+            raise  RuntimeError("function ist not callable")
+
+        if register == RegisterType.USER:
+            if not name:
+                name = function.__name__
+            setattr(self._cmd_handler, name, function)
+        else:
+            setattr(self._cmd_handler, register.value, function)
+
     def change_acl(self, new_acl: AclBase):
         """Change ip acl and check all connected clients."""
         acheck(AclBase, new_acl=new_acl)
@@ -73,6 +92,15 @@ class CmdServer(Thread):
                     "connection {2}".format(acl_level, client._acl, ip)
                 )
                 client._acl = acl_level
+
+    def register(self, function: type, name=""):
+        self.__register_function(RegisterType.USER, function, name)
+
+    def register_connect(self, function: type):
+        self.__register_function(RegisterType.CONNECT, function)
+
+    def register_disconnect(self, function: type):
+        self.__register_function(RegisterType.DISCONNECT, function)
 
     def run(self):
         """Start server to accept connections and handle them."""
@@ -289,18 +317,22 @@ class CmdConnection(Thread):
                     kwargs = {} if len_kwargs == 0 else loads(b_kwargs)
 
                     # Search and call user function of Handler
+                    if command in ["connect", "disconnect"]:
+                        raise AttributeError(
+                            "'{0}' object has no attribute '{1}'"
+                            "".format(self.__cmd.__class__.__name__, command)
+                        )
                     func = getattr(self.__cmd, command)
                     rc = func(self.__acl, *args, **kwargs)
 
                 except Exception as e:
                     self.__handle_exception(e)
-                    continue
-
-                if rc is None:
-                    self.__handle_response(True)
                 else:
-                    b_rc = dumps(rc)
-                    self.__handle_response(True, b_rc)
+                    if rc is None:
+                        self.__handle_response(True)
+                    else:
+                        b_rc = dumps(rc)
+                        self.__handle_response(True, b_rc)
 
             elif cmd == b'\x06L':
                 # Get function list of handler
@@ -332,11 +364,9 @@ class CmdConnection(Thread):
 
         # Call clean up function
         try:
+            self.__cmd.disconnect(self.__addr, self.__port, dirty)
             if dirty:
                 log.error("dirty shutdown of connection")
-                self.__cmd.disconnect_dirty(self.__addr, self.__port)
-            else:
-                self.__cmd.disconnect_clean(self.__addr, self.__port)
         except Exception as e:
             log.exception(e)
 

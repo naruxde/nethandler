@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/netfh.iml" filepath="$PROJECT_DIR$/.idea/netfh.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/nethandler.iml" filepath="$PROJECT_DIR$/.idea/nethandler.iml" />
     </modules>
   </component>
 </project>
