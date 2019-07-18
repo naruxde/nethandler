@@ -1,0 +1,3 @@
+global-exclude test/*
+global-exclude *.pyc
+include LICENSE.txt
