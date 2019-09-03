@@ -3,7 +3,7 @@
 __author__ = "Sven Sager"
 __copyright__ = "Copyright (C) 2019 Sven Sager"
 __license__ = "GPLv3"
-from ipaddress import IPv4Network, IPv4Address, IPv6Network, IPv6Address, AddressValueError
+from ipaddress import AddressValueError, IPv4Address, IPv4Network, IPv6Address, IPv6Network
 from re import compile as recompile
 from warnings import warn
 
@@ -124,6 +124,16 @@ class AclIp(AclBase):
         if acl_file:
             self.load_file(acl_file)
 
+    def __eq__(self, other):
+        try:
+            return (
+                self.__dict_acl == other._AclIp__dict_acl and
+                self.__min_level == other._AclIp__min_level and
+                self.__max_level == other._AclIp__max_level
+            )
+        except AttributeError:
+            return NotImplemented
+
     def add_acl(self, host_or_net_ip: str, acl_level: int):
         acheck(int, acl_level=acl_level)
         acheck(str, host_or_net_ip=host_or_net_ip)
@@ -205,6 +215,10 @@ class AclIp(AclBase):
         acheck(str, file_name=file_name)
 
         with open(file_name, "w") as fh:
+            fh.writelines([
+                "# Nethandler ACL file for IPv4 and IPv6 addresses (CIDR)",
+                "# Format: IP/PREFIX,LEVEL (127.0.0.1/8,0)"
+            ])
             for net in self.__dict_acl:
                 fh.write("{0},{1}\n".format(net, self.__dict_acl[net]))
 
@@ -246,6 +260,16 @@ class AclIpGroup(AclBase):
         self.__level_global = set_global_level
         self.__level_loopback = set_loopback_level
         self.__level_private = set_private_level
+
+    def __eq__(self, other):
+        try:
+            return (
+                self.__level_global == other._AclIpGroup__level_global and
+                self.__level_loopback == other._AclIpGroup__level_loopback and
+                self.__level_private == other._AclIpGroup__level_private
+            )
+        except AttributeError:
+            return NotImplemented
 
     def check_level_ipv4(self, ip_address: IPv4Address):
         if ip_address.is_global:

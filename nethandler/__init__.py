@@ -2,11 +2,12 @@
 """Net handler for communication between server and clients."""
 from .acl import AclIp, AclIpGroup
 from .client import CmdClient
-from .server import CmdServer, CmdHandler
+from .server import CmdClientInfo, CmdHandler, CmdServer
+
 __all__ = [
     "AclIp", "AclIpGroup",
     "CmdClient",
-    "CmdServer", "CmdHandler"
+    "CmdClientInfo", "CmdHandler", "CmdServer",
 ]
 __author__ = "Sven Sager"
 __copyright__ = "Copyright (C) 2019 Sven Sager"

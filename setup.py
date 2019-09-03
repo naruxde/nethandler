@@ -7,6 +7,7 @@ __license__ = "LGPLv3"
 from setuptools import setup
 
 setup(
+    version='0.1.0',
 
     packages=['nethandler'],
     python_requires="~=3.4",
@@ -14,13 +15,12 @@ setup(
 
     # Additional meta-data
     name='nethandler',
-    version='0.1.0',
     author='Sven Sager',
     author_email='akira@hokage.de',
     maintainer="Sven Sager",
     maintainer_email="akira@hokage.de",
     url='https://revpimodio.org',
-    description='Call functions on an server',
+    description='Call functions on a server',
     long_description="",
     download_url="",
     classifiers=[

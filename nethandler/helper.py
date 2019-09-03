@@ -10,32 +10,14 @@ from time import time
 log = getLogger()
 
 
-class CmdClient:
-
-    __slots__ = "connected_since", "acl", "ip", "port"
-
-    def __init__(self, ip: str, port: int, acl: int, connected_since):
-        self.acl = acl
-        self.connected_since = connected_since
-        self.ip = ip
-        self.port = port
-
-    def __str__(self):
-        return self.ip
-
-    @property
-    def connection_time(self):
-        return time() - self.connected_since
-
-
-def acheck(check_type, **kwargs):
-    """Check type of given arguments.
+def acheck(check_type, **kwargs) -> None:
+    """
+    Check type of given arguments.
 
     Use the argument name as keyword and the argument itself as value.
 
-    @param check_type Type to check
-    @param kwargs Arguments to check
-
+    :param check_type: Type to check
+    :param kwargs: Arguments to check
     """
     for var_name in kwargs:
         none_okay = var_name.endswith("_noneok")
@@ -50,7 +32,7 @@ def acheck(check_type, **kwargs):
             raise TypeError(msg)
 
 
-def recv_data(connection: socket, length: int, cancel_event=Event()):
+def recv_data(connection: socket, length: int, cancel_event=Event()) -> bytes:
     """Receive defined amount of data from socket.
 
     :param connection: Socket connection to receive data from
@@ -63,34 +45,27 @@ def recv_data(connection: socket, length: int, cancel_event=Event()):
     if length == 0:
         return b''
 
-    log.debug(
-        "enter helper.recv_data length={0}"
-        "".format(length)
-    )
+    log.debug("enter helper.recv_data length={0}".format(length))
 
     data = bytearray()
+    null_byte_count = 0
+    null_byte_max = int(length / 10)
     position = 0
     while not (position == length or cancel_event.is_set()):
         buff = connection.recv(length - position)
         if buff == b'':
-            break
+            null_byte_count += 1
+            if null_byte_count == null_byte_max:
+                break
         position += len(buff)
         data += buff
 
-    log.debug(
-        "leave helper.recv_data got {0} bytes of {1} requested"
-        "".format(position, length)
-    )
+    log.debug("leave helper.recv_data got {0} bytes of {1} requested".format(position, length))
 
     if length == position:
         return bytes(data)
 
     if cancel_event.is_set():
-        raise RuntimeError(
-            "receive data aborted with cancel event"
-        )
+        raise RuntimeError("receive data aborted with cancel event")
 
-    raise RuntimeError(
-        "received {0} bytes of requested {1}"
-        "".format(position, length)
-    )
+    raise RuntimeError("received {0} bytes of requested {1}".format(position, length))
