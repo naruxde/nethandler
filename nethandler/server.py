@@ -25,11 +25,12 @@ class _RegisterType(Enum):
 
 class CmdClientInfo:
 
-    __slots__ = "connected_since", "acl", "ip", "is_auth", "port"
+    __slots__ = "connected_since", "acl", "data", "ip", "is_auth", "port"
 
-    def __init__(self, ip: str, port: int, acl: int, connected_since: float, is_auth: bool) -> None:
+    def __init__(self, ip: str, port: int, acl: int, connected_since: float, is_auth: bool, data) -> None:
         self.acl = acl
         self.connected_since = connected_since
+        self.data = data
         self.ip = ip
         self.is_auth = is_auth
         self.port = port
@@ -54,7 +55,7 @@ class CmdClientInfo:
 
 class CmdHandler:
     """
-    Default cmd handler for CmcServer class.
+    Default cmd handler for CmdServer class.
 
     Users can inherit from this class the base functionality and should
     override the existing methods.
@@ -63,7 +64,7 @@ class CmdHandler:
     def auth(self, client: CmdClientInfo, username: str, password: str) -> bool:
         return False
 
-    def connect(self, client: CmdClientInfo, *args, **kwargs) -> bool:
+    def connect(self, client: CmdClientInfo) -> bool:
         return True
 
     def disconnect(self, client: CmdClientInfo, clean: bool) -> None:
@@ -86,6 +87,7 @@ class CmdServer(Thread):
         self.__ip_acl = ip_acl
         self._bind_ip = bind_ip
         self._cmd_handler = CmdHandler if not cmd_handler else cmd_handler  # type: type
+        self._data = None
         self._port = port
         self._evt_exit = Event()
         self._so = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -211,6 +213,7 @@ class CmdServer(Thread):
             if acl_level:
                 # Start client thread
                 th = CmdConnection(client_sock, acl_level, self._cmd_handler)
+                th.set_data_object(self._data)
                 th.start()
                 self._th_clients.append(th)
             else:
@@ -246,7 +249,21 @@ class CmdServer(Thread):
             except Exception as e:
                 log.exception(e)
 
+        self.join(timeout=3)
+
         log.debug("leave CmdServer.stop()")
+
+    @property
+    def data(self):
+        """Get data object which is accessible through CmdClientInfo."""
+        return self._data
+
+    @data.setter
+    def data(self, value) -> None:
+        """Set data object which is accessible through CmdClientInfo."""
+        self._data = value
+        for th in self._th_clients:
+            th.set_data_object(self._data)
 
 
 class CmdConnection(Thread):
@@ -266,6 +283,7 @@ class CmdConnection(Thread):
         self.__con = client_socket
         self.__connected = True
         self.__connected_since = time()
+        self.__data = None
         self.__evt_exit = Event()
         self.__is_auth = False
         self.__timeout = timeout
@@ -323,6 +341,10 @@ class CmdConnection(Thread):
                 "".format(status, len(payload))
             )
 
+    def set_data_object(self, data):
+        """Set the data object for client info of this connection."""
+        self.__data = data
+
     def run(self):
         """Execute the requests of client."""
         log.debug("enter CmdHandler.run()")
@@ -331,7 +353,11 @@ class CmdConnection(Thread):
         # Starting connection handling
         try:
             # Call user function for connect event
-            client = CmdClientInfo(self.__addr, self.__port, self.__acl, self.__connected_since, self.__is_auth)
+            client = CmdClientInfo(
+                self.__addr, self.__port,
+                self.__acl, self.__connected_since, self.__is_auth,
+                self.__data,
+            )
             if self.__cmd.connect(client) is False:
                 log.warning("connect function does not return True - disconnect")
                 self.__evt_exit.set()
@@ -408,7 +434,7 @@ class CmdConnection(Thread):
                     kwargs = {} if len_kwargs == 0 else loads(b_kwargs)
 
                     # User can not call connect or disconnect method
-                    if command in ["connect", "disconnect"]:
+                    if command in ("connect", "disconnect"):
                         raise AttributeError(
                             "'{0}' object has no attribute '{1}'"
                             "".format(self.__cmd.__class__.__name__, command)
@@ -419,7 +445,11 @@ class CmdConnection(Thread):
 
                     func = getattr(self.__cmd, command)
                     rc = func(
-                        CmdClientInfo(self.__addr, self.__port, self.__acl, self.__connected_since, self.__is_auth),
+                        CmdClientInfo(
+                            self.__addr, self.__port,
+                            self.__acl, self.__connected_since, self.__is_auth,
+                            self.__data,
+                        ),
                         *args,
                         **kwargs
                     )
@@ -462,7 +492,11 @@ class CmdConnection(Thread):
         # Call clean up function
         try:
             self.__cmd.disconnect(
-                CmdClientInfo(self.__addr, self.__port, self.__acl, self.__connected_since, self.__is_auth),
+                CmdClientInfo(
+                    self.__addr, self.__port,
+                    self.__acl, self.__connected_since, self.__is_auth,
+                    self.__data,
+                ),
                 clean
             )
             if not clean:
