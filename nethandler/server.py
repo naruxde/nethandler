@@ -6,6 +6,7 @@ __license__ = "GPLv3"
 
 import struct
 from enum import Enum
+from inspect import getmembers, ismethod
 from logging import getLogger
 from pickle import dumps, loads
 from socket import SHUT_RDWR
@@ -88,6 +89,7 @@ class CmdServer(Thread):
         self.__ip_acl = ip_acl
         self._bind_ip = bind_ip
         self._cmd_handler = CmdHandler if not cmd_handler else cmd_handler  # type: type
+        self._cmd_handler_locked = cmd_handler is not None
         self._data = None
         self._port = port
         self._evt_exit = Event()
@@ -104,7 +106,7 @@ class CmdServer(Thread):
         """
         if self.is_alive():
             raise RuntimeError("can not register functions after server start")
-        if not type(self._cmd_handler) != CmdHandler:
+        if self._cmd_handler_locked:
             raise RuntimeError("can not add functions to inherited cmd handler")
         if not callable(function):
             raise RuntimeError("function ist not callable")
@@ -319,7 +321,7 @@ class CmdConnection(Thread):
         do_log = len(payload) > 0
         if do_log:
             log.debug(
-                "enter __handle_response status={0} len(payload)={1}"
+                "enter __handle_response status={0} payload_length={1}"
                 "".format(status, len(payload))
             )
 
@@ -330,7 +332,7 @@ class CmdConnection(Thread):
 
         if do_log:
             log.debug(
-                "leave __handle_response status={0} len(payload)={1}"
+                "leave __handle_response status={0} payload_length={1}"
                 "".format(status, len(payload))
             )
 
@@ -451,9 +453,9 @@ class CmdConnection(Thread):
             elif cmd == b'\x06L':
                 # Get function list of handler
                 lst = []
-                for func in self.__cmd.__class__.__dict__:
-                    if func.find("_") != 0:
-                        lst.append(func)
+                for name, method in getmembers(self.__cmd, ismethod):  # type: str, method
+                    if name.find("_") != 0:
+                        lst.append(name)
                 self.__handle_response(True, dumps(lst))
 
             elif cmd == b'\x06\x04':
