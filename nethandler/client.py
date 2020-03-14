@@ -3,12 +3,13 @@
 __author__ = "Sven Sager"
 __copyright__ = "Copyright (C) 2019 Sven Sager"
 __license__ = "GPLv3"
-import socket
+
 from pickle import dumps, loads
+from socket import error as socketerror
 from struct import pack, unpack
 from threading import Event, Lock, Thread
 
-from .helper import acheck, recv_data
+from .helper import HEADER_START, HEADER_STOP, HandlerSocket, acheck
 
 # Sync with server
 SYS_SYNC = b'\x01\x06\x16\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x17'
@@ -20,6 +21,7 @@ SYS_FLST = b'\x01\x06L\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x17'
 
 class CallSave:
     """Handle return values of call_save method."""
+    __slots__ = "value", "success"
 
     def __init__(self, success: bool, value: object):
         self.value = value
@@ -41,22 +43,21 @@ class CmdClient(Thread):
 
         :param server: Address of server
         :param port: Server port to connect to
-        :param timeout_ms: Timeout value in milliseconds 100 - 65535
+        :param timeout_ms: Timeout value in milliseconds 10 - 4294967295
         """
         super().__init__()
         self.daemon = True
 
         self.__addr = server
-        self.__con = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.__con = HandlerSocket()
         self.__port = port
-        self.__connected = None         # Socket connected and alive
-        self.__sock_err = False         # Error value of socket
-        self.__sock_lock = Lock()       # Socket lock on use
-        self.__sock_run = Event()       # Event to trigger mainloop cycle
-        self.__timeout = 0.0            # Socket timeout
-        self.__trigger = False          # Trigger to prevent to much sync commands
-        self.__wait_reconnect = 0.1     # Timeout between reconnect attempts
-        self.__wait_sync = 0.0          # Sync timer 45% of __timeout
+        self.__connected = None  # Socket connected and alive
+        self.__sock_err = False  # Error value of socket
+        self.__sock_lock = Lock()  # Socket lock on use
+        self.__sock_run = Event()  # Event to trigger mainloop cycle
+        self.__timeout = 0.0  # Socket timeout
+        self.__wait_reconnect = 0.1  # Timeout between reconnect attempts
+        self.__wait_sync = 0.0  # Sync timer 45% of __timeout
 
         # Check parameters
         acheck(str, server=server)
@@ -92,26 +93,23 @@ class CmdClient(Thread):
         ex = None
         rc = None
 
-        net_cmd = self.__con.recv(16)
+        net_cmd = self.__con.recvall(16)
         p_start, cmd, payload_length, blob, p_end = unpack("<s2sI8ss", net_cmd)
 
         # Check received net command or disconnect
-        if not (p_start == b'\x01' and p_end == b'\x17'):
+        if not (p_start == HEADER_START and p_end == HEADER_STOP):
             raise RuntimeError("net cmd not valid {0}".format(net_cmd))
 
         if cmd == b'\x06E':
             # Server reports an exception
-            b_ex = recv_data(self.__con, payload_length)
+            b_ex = self.__con.recvall(payload_length)
             ex = loads(b_ex)
 
         elif cmd == b'\x06O':
             # Server returns python object as bytes
             if payload_length > 0:
-                b_rc = recv_data(self.__con, payload_length)
+                b_rc = self.__con.recvall(payload_length)
                 rc = loads(b_rc)
-
-        # Set trigger
-        self.__trigger = True
 
         if ex is not None:
             raise ex
@@ -125,11 +123,11 @@ class CmdClient(Thread):
         socket, so it must be used in locked environments. Never raise
         exceptions (expect wrong call parameters).
 
-        :param timeout_ms: Timeout value in milliseconds 100 - 65535
+        :param timeout_ms: Timeout value in milliseconds 10 - 4294967295
         """
         acheck(int, timeout_ms=timeout_ms)
-        if not 100 <= timeout_ms <= 65535:
-            raise ValueError("value must between 10 and 65535 milliseconds")
+        if not 10 <= timeout_ms <= 4294967295:
+            raise ValueError("value must between 10 and 4294967295 milliseconds")
 
         self.__timeout = timeout_ms / 1000
 
@@ -137,17 +135,16 @@ class CmdClient(Thread):
         if self.__connected:
             self.__con.settimeout(self.__timeout)
             try:
-                self.__con.sendall(
-                    b'\x01\x06C' +
-                    pack("<H10s", timeout_ms, b'\x00' * 10) +
-                    b'\x17'
-                )
+                self.__con.sendall(pack(
+                    "<s2sI8xs",
+                    HEADER_START, b'\x06C', timeout_ms, HEADER_STOP
+                ))
                 self.__handle_response()
             except Exception:
                 self.__sock_err = True
 
         # Set wait of sync to 45 percent of timeout
-        self.__wait_sync = self.__timeout / 10 * 4.5
+        self.__wait_sync = self.__timeout / 100 * 45
         self.__sock_run.set()
 
     def _direct_send(self, send_bytes, recv_count) -> bytes:
@@ -164,8 +161,7 @@ class CmdClient(Thread):
         with self.__sock_lock:
             try:
                 self.__con.sendall(send_bytes)
-                recv = recv_data(self.__con, recv_count)
-                self.__trigger = True
+                recv = self.__con.recvall(recv_count)
                 return recv
 
             except Exception:
@@ -196,17 +192,16 @@ class CmdClient(Thread):
         # bCMcaaaakkkk000b = 16
         with self.__sock_lock:
             try:
-                self.__con.sendall(
-                    b'\x01\x06F' +
-                    pack("<BII3s", len(b_command), len(b_args), len(b_kwargs), b'\x00' * 3) +
-                    b'\x17'
-                )
+                self.__con.sendall(pack(
+                    "<s2sIIIs",
+                    HEADER_START, b'\x06F', len(b_command), len(b_args), len(b_kwargs), HEADER_STOP
+                ))
                 self.__handle_response()
 
                 self.__con.sendall(b_command + b_args + b_kwargs)
                 rc = self.__handle_response()
 
-            except socket.error:
+            except socketerror:
                 self.__sock_err = True
                 self.__sock_run.set()
                 raise
@@ -286,7 +281,7 @@ class CmdClient(Thread):
 
             # On error event, create a new connection
             if self.__sock_err:
-                so = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                so = HandlerSocket()
                 so.settimeout(self.__timeout)
                 try:
                     so.connect((self.__addr, self.__port))
@@ -307,9 +302,7 @@ class CmdClient(Thread):
                         continue
 
             # Do a sync if socket is idling
-            if not self.__trigger and \
-                    self.__sock_lock.acquire(blocking=False):
-
+            if self.__sock_lock.acquire(blocking=False):
                 try:
                     # Send data
                     self.__con.sendall(SYS_SYNC)
@@ -323,7 +316,6 @@ class CmdClient(Thread):
 
                 self.__sock_lock.release()
 
-            self.__trigger = False
             self.__sock_run.wait(self.__wait_sync)
 
     def start(self, connect_async=False):
@@ -339,7 +331,7 @@ class CmdClient(Thread):
             self.__connected = True
             self.__sock_err = True
         else:
-            so = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            so = HandlerSocket()
             so.settimeout(self.__timeout)
             so.connect((self.__addr, self.__port))
             self.__con = so

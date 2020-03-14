@@ -3,16 +3,17 @@
 __author__ = "Sven Sager"
 __copyright__ = "Copyright (C) 2019 Sven Sager"
 __license__ = "GPLv3"
-import socket
+
 import struct
 from enum import Enum
 from logging import getLogger
 from pickle import dumps, loads
+from socket import SHUT_RDWR
 from threading import Event, Thread
 from time import time
 
 from .acl import AclBase
-from .helper import acheck, recv_data
+from .helper import HEADER_START, HEADER_STOP, HandlerSocket, acheck
 
 log = getLogger()
 
@@ -24,7 +25,7 @@ class _RegisterType(Enum):
 
 
 class CmdClientInfo:
-
+    """Information of connected client."""
     __slots__ = "connected_since", "acl", "data", "ip", "is_auth", "port"
 
     def __init__(self, ip: str, port: int, acl: int, connected_since: float, is_auth: bool, data) -> None:
@@ -90,7 +91,7 @@ class CmdServer(Thread):
         self._data = None
         self._port = port
         self._evt_exit = Event()
-        self._so = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._so = HandlerSocket()
         self._th_clients = []
 
     def __register_function(self, register: _RegisterType, function: type, name="") -> None:
@@ -245,7 +246,7 @@ class CmdServer(Thread):
         self._evt_exit.set()
         if self._so is not None:
             try:
-                self._so.shutdown(socket.SHUT_RDWR)
+                self._so.shutdown(SHUT_RDWR)
             except Exception as e:
                 log.exception(e)
 
@@ -269,7 +270,7 @@ class CmdServer(Thread):
 class CmdConnection(Thread):
     """Handle connection to client and do the jobs."""
 
-    def __init__(self, client_socket: socket.socket, acl_level: int, cmd_handler: type, timeout=5.0):
+    def __init__(self, client_socket: HandlerSocket, acl_level: int, cmd_handler: type, timeout=5.0):
         """
         Init CmdHandler class.
 
@@ -304,12 +305,8 @@ class CmdConnection(Thread):
         # Send exception to client
         b_ex = dumps(ex)
         self.__con.sendall(struct.pack(
-            "<s2sI8ss",
-            b'\x01',
-            b'\x06E',
-            len(b_ex),
-            b'\x00\x00\x00\x00\x00\x00\x00\x00',
-            b'\x17'
+            "<s2sI8xs",
+            HEADER_START, b'\x06E', len(b_ex), HEADER_STOP
         ) + b_ex)
 
     def __handle_response(self, status: bool, payload=b'') -> None:
@@ -327,12 +324,8 @@ class CmdConnection(Thread):
             )
 
         self.__con.sendall(struct.pack(
-            "<s2sI8ss",
-            b'\x01',
-            b'\x06O' if status else b'\x06E',
-            len(payload),
-            b'\x00\x00\x00\x00\x00\x00\x00\x00',
-            b'\x17'
+            "<s2sI8xs",
+            HEADER_START, b'\x06O' if status else b'\x06E', len(payload), b'\x17'
         ) + payload)
 
         if do_log:
@@ -372,19 +365,17 @@ class CmdConnection(Thread):
 
             # Receive full command or disconnect
             try:
-                # bCM000000000000b = 16
-                net_cmd = self.__con.recv(16)
-                if not net_cmd:
-                    break
+                # b CM IIII 00000000 b = 16
+                net_cmd = self.__con.recvall(16, self.__evt_exit)
 
                 # Unpack the bytes to process
-                p_start, cmd, payload, p_end = struct.unpack("<s2s12ss", net_cmd)
+                p_start, cmd, payload_length, blob, p_stop = struct.unpack("<s2sI8ss", net_cmd)
             except Exception as e:
                 log.exception(e)
                 break
 
             # Check received net command or disconnect
-            if not (p_start == b'\x01' and p_end == b'\x17'):
+            if not (p_start == HEADER_START and p_stop == HEADER_STOP):
                 log.error("net cmd not valid {0}".format(net_cmd))
                 break
 
@@ -394,15 +385,9 @@ class CmdConnection(Thread):
 
             elif cmd == b'\x06C':
                 # Configure socket on client demand
-                # bCMii0000000000b = 16
+                # b CM iiii 00000000 b = 16
 
-                try:
-                    timeout_ms, blob = struct.unpack("<H10s", payload)
-                except Exception as e:
-                    self.__handle_exception(e)
-                    break
-
-                self.__timeout = timeout_ms / 1000
+                self.__timeout = payload_length / 1000
                 self.__con.settimeout(self.__timeout)
                 log.debug("set socket timeout to {0}".format(self.__timeout))
 
@@ -413,9 +398,9 @@ class CmdConnection(Thread):
 
             elif cmd == b'\x06F':
                 # Call a function of CmdHandler
-                # bCMcaaaakkkk000b = 16
+                # bCM iiii aaaakkkk b = 16
                 try:
-                    len_command, len_args, len_kwargs, blob = struct.unpack("<BII3s", payload)
+                    len_args, len_kwargs = struct.unpack("<II", blob)
                 except Exception as e:
                     self.__handle_exception(e)
                     continue
@@ -425,9 +410,9 @@ class CmdConnection(Thread):
 
                 # Process payload
                 try:
-                    b_command = recv_data(self.__con, len_command, self.__evt_exit)
-                    b_args = recv_data(self.__con, len_args, self.__evt_exit)
-                    b_kwargs = recv_data(self.__con, len_kwargs, self.__evt_exit)
+                    b_command = self.__con.recvall(payload_length, self.__evt_exit)
+                    b_args = self.__con.recvall(len_args, self.__evt_exit)
+                    b_kwargs = self.__con.recvall(len_kwargs, self.__evt_exit)
 
                     command = b_command.decode("ASCII")
                     args = () if len_args == 0 else loads(b_args)
@@ -516,7 +501,7 @@ class CmdConnection(Thread):
 
         self.__evt_exit.set()
         if self.__connected:
-            self.__con.shutdown(socket.SHUT_RDWR)
+            self.__con.shutdown(SHUT_RDWR)
 
         log.debug("leave CmdHandler.stop()")
 

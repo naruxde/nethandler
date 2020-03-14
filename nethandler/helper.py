@@ -3,11 +3,15 @@
 __author__ = "Sven Sager"
 __copyright__ = "Copyright (C) 2019 Sven Sager"
 __license__ = "GPLv3"
+
 from logging import getLogger
-from socket import socket
+from socket import AF_INET, SOCK_STREAM, getdefaulttimeout, socket
 from threading import Event
-from time import time
+
 log = getLogger()
+
+HEADER_START = b'\x01'  # First Byte of netcmd
+HEADER_STOP = b'\x17'  # Last Byte of netcmd
 
 
 def acheck(check_type, **kwargs) -> None:
@@ -23,7 +27,6 @@ def acheck(check_type, **kwargs) -> None:
         none_okay = var_name.endswith("_noneok")
 
         if not (isinstance(kwargs[var_name], check_type) or none_okay and kwargs[var_name] is None):
-
             msg = "Argument '{0}' must be {1}{2}".format(
                 var_name.rstrip("_noneok"),
                 str(check_type),
@@ -32,40 +35,60 @@ def acheck(check_type, **kwargs) -> None:
             raise TypeError(msg)
 
 
-def recv_data(connection: socket, length: int, cancel_event=Event()) -> bytes:
-    """Receive defined amount of data from socket.
+class HandlerSocket(socket):
+    """Special socket with save receive all method."""
 
-    :param connection: Socket connection to receive data from
-    :param length: Length to receive
-    :param cancel_event: Cancel receiving data if event is set
-    :return: Received bytes or None
-    """
+    def __init__(self, family=AF_INET, type=SOCK_STREAM, proto=0, fileno=None):
+        self.__buff_size = 2048
+        self.__buff_block = bytearray(self.__buff_size)
+        self.__buf_data = bytearray()
+        super(HandlerSocket, self).__init__(family=family, type=type, proto=proto, fileno=fileno)
 
-    # Shortcut for zero length
-    if length == 0:
-        return b''
+    def accept(self):
+        """accept() -> (socket object, address info)
 
-    log.debug("enter helper.recv_data length={0}".format(length))
+        Wait for an incoming connection.  Return a new socket
+        representing the connection, and the address of the client.
+        For IP sockets, the address info is a pair (hostaddr, port).
+        """
+        fd, addr = self._accept()
+        # If our type has the SOCK_NONBLOCK flag, we shouldn't pass it onto the
+        # new socket. We do not currently allow passing SOCK_NONBLOCK to
+        # accept4, so the returned socket is always blocking.
+        type = self.type & ~globals().get("SOCK_NONBLOCK", 0)
+        sock = HandlerSocket(self.family, type, self.proto, fileno=fd)
+        # Issue #7995: if no default timeout is set and the listening
+        # socket had a (non-zero) timeout, force the new socket in blocking
+        # mode to override platform-specific socket flags inheritance.
+        if getdefaulttimeout() is None and self.gettimeout():
+            sock.setblocking(True)
+        return sock, addr
 
-    data = bytearray()
-    null_byte_count = 0
-    null_byte_max = int(length / 10)
-    position = 0
-    while not (position == length or cancel_event.is_set()):
-        buff = connection.recv(length - position)
-        if buff == b'':
-            null_byte_count += 1
-            if null_byte_count == null_byte_max:
+    def recvall(self, length: int, cancel_event=Event()) -> bytes:
+        """Receive defined amount of data from socket.
+
+        :param connection: Socket connection to receive data from
+        :param length: Length to receive
+        :param cancel_event: Cancel receiving data if event is set
+        :return: Received bytes or None
+        """
+
+        # Shortcut for zero length
+        if length == 0:
+            return b''
+
+        self.__buf_data.clear()
+        while length > 0 and not cancel_event.is_set():
+            count = self.recv_into(self.__buff_block, min(length, self.__buff_size))
+            if count == 0:
                 break
-        position += len(buff)
-        data += buff
+            length -= count
+            self.__buf_data += self.__buff_block[:count]
 
-    log.debug("leave helper.recv_data got {0} bytes of {1} requested".format(position, length))
+        if length == 0:
+            return bytes(self.__buf_data)
 
-    if length == position:
-        return bytes(data)
+        if cancel_event.is_set():
+            raise RuntimeError("receive data aborted with cancel event")
 
-    if cancel_event.is_set():
-        raise RuntimeError("receive data aborted with cancel event")
-
-    raise RuntimeError("received {0} bytes of requested {1}".format(position, length))
+        raise RuntimeError("received {0} bytes and miss {1} bytes".format(len(self.__buf_data), length))
