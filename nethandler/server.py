@@ -311,29 +311,36 @@ class CmdConnection(Thread):
             HEADER_START, b'\x06E', len(b_ex), HEADER_STOP
         ) + b_ex)
 
-    def __handle_response(self, status: bool, payload=b'') -> None:
+    def __handle_response(self, cmd=b'\x06O', blob=b'', payload=b'') -> None:
         """
         Internal method to send response to client.
 
-        :param status: Response status
+        :param cmd: Command bytes for client (cmd / 2 bytes)
+        :param blob: Blob in cmd message for free use (blob / 8 bytes)
         :param payload: Optional payload to send
         """
         do_log = len(payload) > 0
         if do_log:
             log.debug(
-                "enter __handle_response status={0} payload_length={1}"
-                "".format(status, len(payload))
+                "enter __handle_response cmd={0}, payload_length={1}"
+                "".format(cmd, len(payload))
             )
 
-        self.__con.sendall(struct.pack(
-            "<s2sI8xs",
-            HEADER_START, b'\x06O' if status else b'\x06E', len(payload), b'\x17'
-        ) + payload)
+        if blob:
+            self.__con.sendall(struct.pack(
+                "<s2sI8ss",
+                HEADER_START, cmd, len(payload), blob, HEADER_STOP
+            ) + payload)
+        else:
+            self.__con.sendall(struct.pack(
+                "<s2sI8xs",
+                HEADER_START, cmd, len(payload), HEADER_STOP
+            ) + payload)
 
         if do_log:
             log.debug(
-                "leave __handle_response status={0} payload_length={1}"
-                "".format(status, len(payload))
+                "leave __handle_response cmd={0} payload_length={1}"
+                "".format(cmd, len(payload))
             )
 
     def set_data_object(self, data):
@@ -383,7 +390,7 @@ class CmdConnection(Thread):
 
             if cmd == b'\x06\x16':
                 # Synchronization in idle to reset timeout
-                self.__handle_response(True)
+                self.__handle_response()
 
             elif cmd == b'\x06C':
                 # Configure socket on client demand
@@ -393,7 +400,7 @@ class CmdConnection(Thread):
                 self.__con.settimeout(self.__timeout)
                 log.debug("set socket timeout to {0}".format(self.__timeout))
 
-                self.__handle_response(True)
+                self.__handle_response()
 
                 # Do not calculate runtime on the end of this while
                 continue
@@ -408,7 +415,7 @@ class CmdConnection(Thread):
                     continue
 
                 # Command parsed successfully
-                self.__handle_response(True)
+                self.__handle_response()
 
                 # Process payload
                 try:
@@ -420,8 +427,8 @@ class CmdConnection(Thread):
                     args = () if len_args == 0 else loads(b_args)
                     kwargs = {} if len_kwargs == 0 else loads(b_kwargs)
 
-                    # User can not call connect or disconnect method
-                    if command in ("connect", "disconnect"):
+                    # User can not call auth, connect or disconnect method
+                    if command in ("auth", "connect", "disconnect"):
                         raise AttributeError(
                             "'{0}' object has no attribute '{1}'"
                             "".format(self.__cmd.__class__.__name__, command)
@@ -445,10 +452,10 @@ class CmdConnection(Thread):
                     self.__handle_exception(e)
                 else:
                     if rc is None:
-                        self.__handle_response(True)
+                        self.__handle_response()
                     else:
                         b_rc = dumps(rc)
-                        self.__handle_response(True, b_rc)
+                        self.__handle_response(payload=b_rc)
 
             elif cmd == b'\x06L':
                 # Get function list of handler
@@ -456,7 +463,7 @@ class CmdConnection(Thread):
                 for name, method in getmembers(self.__cmd, ismethod):  # type: str, method
                     if name.find("_") != 0:
                         lst.append(name)
-                self.__handle_response(True, dumps(lst))
+                self.__handle_response(payload=dumps(lst))
 
             elif cmd == b'\x06\x04':
                 # End of transmission
@@ -478,14 +485,11 @@ class CmdConnection(Thread):
 
         # Call clean up function
         try:
-            self.__cmd.disconnect(
-                CmdClientInfo(
-                    self.__addr, self.__port,
-                    self.__acl, self.__connected_since, self.__is_auth,
-                    self.__data,
-                ),
-                clean
-            )
+            self.__cmd.disconnect(CmdClientInfo(
+                self.__addr, self.__port,
+                self.__acl, self.__connected_since, self.__is_auth,
+                self.__data,
+            ), clean)
             if not clean:
                 log.error("dirty shutdown of connection")
         except Exception as e:

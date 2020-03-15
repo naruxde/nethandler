@@ -32,7 +32,7 @@ class CallSave:
 
 
 # FIXME: Start own thread inside of this class
-class CmdClient(Thread):
+class CmdClient:
     """Network command client."""
 
     # TODO: __slots__ =
@@ -51,10 +51,11 @@ class CmdClient(Thread):
         self.__addr = server
         self.__con = HandlerSocket()
         self.__port = port
-        self.__connected = None  # Socket connected and alive
+        self.__connected = False  # Socket connected and alive
         self.__sock_err = False  # Error value of socket
         self.__sock_lock = Lock()  # Socket lock on use
         self.__sock_run = Event()  # Event to trigger mainloop cycle
+        self.__th_run = Thread(target=self._run)
         self.__timeout = 0.0  # Socket timeout
         self.__wait_reconnect = 0.1  # Timeout between reconnect attempts
         self.__wait_sync = 0.0  # Sync timer 45% of __timeout
@@ -253,6 +254,7 @@ class CmdClient(Thread):
             except Exception:
                 pass
 
+        self.__th_run.join()
         self.__con.close()
 
     def get_functions(self) -> list:
@@ -274,7 +276,7 @@ class CmdClient(Thread):
                 self.__sock_run.set()
                 raise
 
-    def run(self):
+    def _run(self):
         """Check connection state and hold connection."""
         while self.__connected:
             self.__sock_run.clear()
@@ -324,9 +326,6 @@ class CmdClient(Thread):
 
         :param connect_async: Start handling, even server ist unreachable
         """
-        if self.__connected is not None:
-            raise RuntimeError("client instances can only be connected once")
-
         if connect_async:
             self.__connected = True
             self.__sock_err = True
@@ -340,7 +339,8 @@ class CmdClient(Thread):
             self.timeout = int(self.__timeout * 1000)
 
         # Start thread mainloop
-        super().start()
+        self.__th_run = Thread(target=self._run)
+        self.__th_run.start()
 
     @property
     def connected(self):
