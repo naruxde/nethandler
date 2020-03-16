@@ -4,6 +4,7 @@ __author__ = "Sven Sager"
 __copyright__ = "Copyright (C) 2019 Sven Sager"
 __license__ = "GPLv3"
 
+from hashlib import sha3_256
 from pickle import dumps, loads
 from socket import error as socketerror
 from struct import pack, unpack
@@ -49,6 +50,9 @@ class CmdClient:
         self.daemon = True
 
         self.__addr = server
+        self.__auth = False
+        self.__auth_user = b''
+        self.__auth_password = b''
         self.__con = HandlerSocket()
         self.__port = port
         self.__connected = False  # Socket connected and alive
@@ -82,6 +86,32 @@ class CmdClient:
         """
         return lambda *args, **kwargs: self.call(item, *args, **kwargs)
 
+    def __do_auth(self) -> None:
+        """
+        Send auth request and process values of this class.
+
+        Call this function after setting internal username and password. This
+        function will set the __auth method of this class.
+        This function is not locking the socket, so it must be used in locked
+        environments. Never raise exceptions.
+        """
+        if self.__auth_password == b'':
+            self.__auth = False
+            return
+
+        # b CM iiii c0000000 b = 16
+        try:
+            self.__con.sendall(pack(
+                "<s2sI?7xs",
+                HEADER_START, b'\x06A', 32 + len(self.__auth_user), True, HEADER_STOP
+            ) + self.__auth_password + self.__auth_user)
+            self.__auth = bool(self.__handle_response())
+
+        except Exception:
+            self.__auth = False
+            self.__sock_err = True
+            self.__sock_run.set()
+
     def __handle_response(self):
         """
         Server answer manager.
@@ -91,7 +121,6 @@ class CmdClient:
 
         :return: Python object from server
         """
-        ex = None
         rc = None
 
         net_cmd = self.__con.recvall(16)
@@ -105,6 +134,7 @@ class CmdClient:
             # Server reports an exception
             b_ex = self.__con.recvall(payload_length)
             ex = loads(b_ex)
+            raise ex
 
         elif cmd == b'\x06O':
             # Server returns python object as bytes
@@ -112,8 +142,10 @@ class CmdClient:
                 b_rc = self.__con.recvall(payload_length)
                 rc = loads(b_rc)
 
-        if ex is not None:
-            raise ex
+        elif cmd == b'\x06A':
+            # Response of auth request
+            rc, = unpack("<?7x", blob)
+
         return rc
 
     def __set_systimeout(self, timeout_ms):
@@ -164,6 +196,49 @@ class CmdClient:
                 self.__con.sendall(send_bytes)
                 recv = self.__con.recvall(recv_count)
                 return recv
+
+            except Exception:
+                self.__sock_err = True
+                self.__sock_run.set()
+                raise
+
+    def auth(self, username: str, password: str) -> bool:
+        """
+        Send authenticate request to server.
+
+        :param username: Username
+        :param password: Password
+        :return: Result of request - True on success
+        """
+        if not self.__connected:
+            raise ValueError("I/O operation on closed socket")
+
+        # Prepare values and process by internal function
+        self.__auth_user = username.encode("utf-8")
+        self.__auth_password = sha3_256(password.encode("utf-8")).digest()
+        with self.__sock_lock:
+            self.__do_auth()
+
+        return self.__auth
+
+    def unauth(self) -> None:
+        """Destroy auth token on server."""
+        if not self.__connected:
+            raise ValueError("I/O operation on closed socket")
+
+        # Reset data to prevent auth on reconnect
+        self.__auth = False
+        self.__auth_user = b''
+        self.__auth_password = b''
+
+        # b CM iiii c0000000 b = 16
+        with self.__sock_lock:
+            try:
+                self.__con.sendall(pack(
+                    "<s2sI?7xs",
+                    HEADER_START, b'\x06A', 0, False, HEADER_STOP
+                ))
+                self.__handle_response()
 
             except Exception:
                 self.__sock_err = True
@@ -300,6 +375,7 @@ class CmdClient:
 
                     # Set timeout on server
                     self.__set_systimeout(int(self.__timeout * 1000))
+                    self.__do_auth()
                     if self.__sock_err:
                         continue
 
@@ -350,6 +426,10 @@ class CmdClient:
         :return: True, if connection is open
         """
         return self.__connected
+
+    @property
+    def is_auth(self) -> bool:
+        return self.__auth
 
     @property
     def port(self) -> int:

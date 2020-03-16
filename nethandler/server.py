@@ -6,6 +6,7 @@ __license__ = "GPLv3"
 
 import struct
 from enum import Enum
+from hashlib import sha3_256
 from inspect import getmembers, ismethod
 from logging import getLogger
 from pickle import dumps, loads
@@ -20,7 +21,10 @@ log = getLogger()
 
 
 class _RegisterType(Enum):
+    """Register types for cmd functions."""
+
     USER = "user"
+    AUTH = "auth"
     CONNECT = "connect"
     DISCONNECT = "disconnect"
 
@@ -63,8 +67,8 @@ class CmdHandler:
     override the existing methods.
     """
 
-    def auth(self, client: CmdClientInfo, username: str, password: str) -> bool:
-        return False
+    def auth(self, client: CmdClientInfo, username: str) -> str:
+        return ""
 
     def connect(self, client: CmdClientInfo) -> bool:
         return True
@@ -130,18 +134,17 @@ class CmdServer(Thread):
         self.__ip_acl = new_acl
 
         for client in self._th_clients:  # type: CmdConnection
-            ip = client.address
-            acl_level = self.__ip_acl.get_level(ip)
+            acl_level = self.__ip_acl.get_level(client.address)
             if not acl_level:
                 # Disconnect client, because it is not in new ACLs
-                log.warning("client {0} removed from acl - disconnect!".format(ip))
+                log.warning("client {0} removed from acl - disconnect!".format(client.address))
                 client.stop()
 
             elif acl_level != client._acl:
                 # Patch acl level in client thread
                 log.warning(
                     "change acl level from {0} to {1} on existing "
-                    "connection {2}".format(acl_level, client._acl, ip)
+                    "connection {2}".format(acl_level, client._acl, client.address)
                 )
                 client._acl = acl_level
 
@@ -157,14 +160,35 @@ class CmdServer(Thread):
         """
         self.__register_function(_RegisterType.USER, function, name)
 
+    def register_auth(self, function) -> None:
+        """
+        Register a auth function for user management.
+
+        This function will be called, when a client calls the auth method
+        to authenticate against your server. The function must support
+        arguments for <class 'CmdClientInfo'> and username. You have to return
+        the password as <class 'str'> which will checkt form the server against
+        the sent hashed password form the client. If the password matches, the
+        CmdClientInfo.is_auth method will return True on all function calls.
+
+        Empty passwords are not allowed!
+
+        def auth(self, client: CmdClientInfo, username: str) -> str
+
+        :param function: Function to call on client auth request
+        """
+        self.__register_function(_RegisterType.AUTH, function)
+
     def register_connect(self, function) -> None:
         """
         Register a connect function for new client connections.
 
         This function will be called, when a new client connects to the
-        server. It must support a argument for <class 'CmdClientInfo'> and
+        server. It must support an argument for <class 'CmdClientInfo'> and
         has to return True. This can be used to check acl level or check IP
-        addresses and deny connection with returning not True.
+        addresses and deny connection by returning False.
+
+        def connect(self, client: CmdClientInfo) -> bool
 
         :param function: Function to call on client connect
         """
@@ -175,9 +199,11 @@ class CmdServer(Thread):
         Register a disconnect function if client disconnects.
 
         This function will be called, when a client disconnects from the
-        server. It must support a argument for <class 'CmdClientInfo'> and
+        server. It must support am argument for <class 'CmdClientInfo'> and
         <class 'bool'> which is True, if the client request the disconnection
         and will be False, if the client had a network failure.
+
+        def disconnect(self, client: CmdClientInfo, clean: bool) -> None
 
         :param function: Function to call on client disconnect
         """
@@ -248,10 +274,12 @@ class CmdServer(Thread):
         self._evt_exit.set()
         if self._so is not None:
             try:
+                # Free from accept funktion to prevent new connections
                 self._so.shutdown(SHUT_RDWR)
             except Exception as e:
                 log.exception(e)
 
+        # Thread will disconnect all clients on the end of mainloop
         self.join(timeout=3)
 
         log.debug("leave CmdServer.stop()")
@@ -392,6 +420,45 @@ class CmdConnection(Thread):
                 # Synchronization in idle to reset timeout
                 self.__handle_response()
 
+            elif cmd == b'\x06A':
+                # Authenticate request from client
+                # b CM iiii c0000000 b = 16
+
+                action, = struct.unpack("<?7x", blob)
+                if action:
+                    # Authenticate client
+                    try:
+                        buff = self.__con.recvall(payload_length, self.__evt_exit)
+                        password_hash = buff[:32]
+                        username = buff[32:].decode("utf-8")
+
+                        password = self.__cmd.auth(CmdClientInfo(
+                            self.__addr, self.__port,
+                            self.__acl, self.__connected_since, self.__is_auth,
+                            self.__data,
+                        ), username)
+                    except Exception as e:
+                        self.__handle_exception(e)
+                        continue
+
+                    # Empty passwords are not allowed and return False
+                    if password:
+                        password = sha3_256(password.encode("utf-8")).digest()
+                    self.__is_auth = password_hash == password
+
+                else:
+                    # Delete auth token from client
+                    self.__is_auth = False
+
+                self.__handle_response(
+                    cmd=cmd,
+                    blob=struct.pack("<?7x", self.__is_auth)
+                )
+
+                log.info("set is_auth of client '{0}' to {1}".format(
+                    self.__addr, self.__is_auth
+                ))
+
             elif cmd == b'\x06C':
                 # Configure socket on client demand
                 # b CM iiii 00000000 b = 16
@@ -428,14 +495,11 @@ class CmdConnection(Thread):
                     kwargs = {} if len_kwargs == 0 else loads(b_kwargs)
 
                     # User can not call auth, connect or disconnect method
-                    if command in ("auth", "connect", "disconnect"):
+                    if command in ("auth", "unauth", "connect", "disconnect"):
                         raise AttributeError(
                             "'{0}' object has no attribute '{1}'"
                             "".format(self.__cmd.__class__.__name__, command)
                         )
-
-                    # Auth function has username and password as sha512 bytes
-                    # TODO: Implement auth function
 
                     func = getattr(self.__cmd, command)
                     rc = func(
