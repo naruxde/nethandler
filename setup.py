@@ -7,7 +7,7 @@ __license__ = "LGPLv3"
 from setuptools import setup
 
 setup(
-    version='0.1.1',
+    version='0.1.2',
 
     packages=['nethandler'],
     python_requires="~=3.4",

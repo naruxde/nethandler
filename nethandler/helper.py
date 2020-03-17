@@ -10,8 +10,8 @@ from threading import Event
 
 log = getLogger()
 
-HEADER_START = b'\x01'  # First Byte of netcmd
-HEADER_STOP = b'\x17'  # Last Byte of netcmd
+HEADER_START = b'\x01'  # First Byte of net cmd
+HEADER_STOP = b'\x17'  # Last Byte of net cmd
 
 
 def acheck(check_type, **kwargs) -> None:
@@ -67,7 +67,6 @@ class HandlerSocket(socket):
     def recvall(self, length: int, cancel_event=Event()) -> bytes:
         """Receive defined amount of data from socket.
 
-        :param connection: Socket connection to receive data from
         :param length: Length to receive
         :param cancel_event: Cancel receiving data if event is set
         :return: Received bytes or None

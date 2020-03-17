@@ -4,7 +4,7 @@ __author__ = "Sven Sager"
 __copyright__ = "Copyright (C) 2019 Sven Sager"
 __license__ = "GPLv3"
 
-from hashlib import sha3_256
+from hashlib import sha256
 from pickle import dumps, loads
 from socket import error as socketerror
 from struct import pack, unpack
@@ -99,7 +99,7 @@ class CmdClient:
             self.__auth = False
             return
 
-        # b CM iiii c0000000 b = 16
+        # b CM IIII c0000000 b = 16
         try:
             self.__con.sendall(pack(
                 "<s2sI?7xs",
@@ -215,7 +215,7 @@ class CmdClient:
 
         # Prepare values and process by internal function
         self.__auth_user = username.encode("utf-8")
-        self.__auth_password = sha3_256(password.encode("utf-8")).digest()
+        self.__auth_password = sha256(password.encode("utf-8")).digest()
         with self.__sock_lock:
             self.__do_auth()
 
@@ -231,7 +231,7 @@ class CmdClient:
         self.__auth_user = b''
         self.__auth_password = b''
 
-        # b CM iiii c0000000 b = 16
+        # b CM IIII c0000000 b = 16
         with self.__sock_lock:
             try:
                 self.__con.sendall(pack(
@@ -265,7 +265,7 @@ class CmdClient:
         b_args = b'' if len(args) == 0 else dumps(args)
         b_kwargs = b'' if len(kwargs) == 0 else dumps(kwargs)
 
-        # bCMcaaaakkkk000b = 16
+        # b CM IIII IIIIIIII b = 16
         with self.__sock_lock:
             try:
                 self.__con.sendall(pack(
@@ -321,15 +321,9 @@ class CmdClient:
         self.__connected = False
         self.__sock_run.set()
 
-        # Send a clean disconnect to server
-        # TODO: Should we set a time out to avoid a dead lock?
-        with self.__sock_lock:
-            try:
-                self.__con.sendall(SYS_EXIT)
-            except Exception:
-                pass
-
+        # Thread will send a disconnect to server on the end
         self.__th_run.join()
+
         self.__con.close()
 
     def get_functions(self) -> list:
@@ -395,6 +389,14 @@ class CmdClient:
                 self.__sock_lock.release()
 
             self.__sock_run.wait(self.__wait_sync)
+
+        # Send disconnect to server, but wait max time do avoid dead locks
+        try:
+            self.__sock_lock.acquire(timeout=self.__wait_sync)
+            self.__con.sendall(SYS_EXIT)
+        except Exception:
+            pass
+        self.__sock_lock.release()
 
     def start(self, connect_async=False):
         """

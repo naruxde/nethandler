@@ -6,7 +6,7 @@ __license__ = "GPLv3"
 
 import struct
 from enum import Enum
-from hashlib import sha3_256
+from hashlib import sha256
 from inspect import getmembers, ismethod
 from logging import getLogger
 from pickle import dumps, loads
@@ -153,7 +153,7 @@ class CmdServer(Thread):
         Register a new function to server which can be called from clients.
 
         The name of the function will be the same, which the clients have
-        to use. You can change the name for clients with the name paremeter.
+        to use. You can change the name for clients with the name parameter.
 
         :param function: Function to register
         :param name: Alternative function name for clients
@@ -167,7 +167,7 @@ class CmdServer(Thread):
         This function will be called, when a client calls the auth method
         to authenticate against your server. The function must support
         arguments for <class 'CmdClientInfo'> and username. You have to return
-        the password as <class 'str'> which will checkt form the server against
+        the password as <class 'str'> which will check form the server against
         the sent hashed password form the client. If the password matches, the
         CmdClientInfo.is_auth method will return True on all function calls.
 
@@ -274,7 +274,7 @@ class CmdServer(Thread):
         self._evt_exit.set()
         if self._so is not None:
             try:
-                # Free from accept funktion to prevent new connections
+                # Free from accept function to prevent new connections
                 self._so.shutdown(SHUT_RDWR)
             except Exception as e:
                 log.exception(e)
@@ -422,7 +422,7 @@ class CmdConnection(Thread):
 
             elif cmd == b'\x06A':
                 # Authenticate request from client
-                # b CM iiii c0000000 b = 16
+                # b CM IIII c0000000 b = 16
 
                 action, = struct.unpack("<?7x", blob)
                 if action:
@@ -443,7 +443,7 @@ class CmdConnection(Thread):
 
                     # Empty passwords are not allowed and return False
                     if password:
-                        password = sha3_256(password.encode("utf-8")).digest()
+                        password = sha256(password.encode("utf-8")).digest()
                     self.__is_auth = password_hash == password
 
                 else:
@@ -461,7 +461,7 @@ class CmdConnection(Thread):
 
             elif cmd == b'\x06C':
                 # Configure socket on client demand
-                # b CM iiii 00000000 b = 16
+                # b CM IIII 00000000 b = 16
 
                 self.__timeout = payload_length / 1000
                 self.__con.settimeout(self.__timeout)
@@ -474,7 +474,7 @@ class CmdConnection(Thread):
 
             elif cmd == b'\x06F':
                 # Call a function of CmdHandler
-                # bCM iiii aaaakkkk b = 16
+                # bCM IIII aaaakkkk b = 16
                 try:
                     len_args, len_kwargs = struct.unpack("<II", blob)
                 except Exception as e:
