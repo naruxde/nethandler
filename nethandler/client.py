@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Client for network file handler."""
 __author__ = "Sven Sager"
-__copyright__ = "Copyright (C) 2019 Sven Sager"
+__copyright__ = "Copyright (C) 2020 Sven Sager"
 __license__ = "GPLv3"
 
 from hashlib import sha256
@@ -32,11 +32,8 @@ class CallSave:
         return self.success
 
 
-# FIXME: Start own thread inside of this class
 class CmdClient:
     """Network command client."""
-
-    # TODO: __slots__ =
 
     def __init__(self, server: str, port: int, timeout_ms=5000):
         """
@@ -46,9 +43,6 @@ class CmdClient:
         :param port: Server port to connect to
         :param timeout_ms: Timeout value in milliseconds 10 - 4294967295
         """
-        super().__init__()
-        self.daemon = True
-
         self.__addr = server
         self.__auth = False
         self.__auth_user = b''
@@ -404,6 +398,9 @@ class CmdClient:
 
         :param connect_async: Start handling, even server ist unreachable
         """
+        if self.__connected or self.__th_run.is_alive():
+            return
+
         if connect_async:
             self.__connected = True
             self.__sock_err = True
@@ -431,6 +428,11 @@ class CmdClient:
 
     @property
     def is_auth(self) -> bool:
+        """
+        Get the state of authentication against the server
+
+        :return: True, if the accepted the login request
+        """
         return self.__auth
 
     @property

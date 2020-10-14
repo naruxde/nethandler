@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Server for network file handler."""
 __author__ = "Sven Sager"
-__copyright__ = "Copyright (C) 2019 Sven Sager"
+__copyright__ = "Copyright (C) 2020 Sven Sager"
 __license__ = "GPLv3"
 
 import struct
@@ -68,12 +68,36 @@ class CmdHandler:
     """
 
     def auth(self, client: CmdClientInfo, username: str) -> str:
+        """
+        Server will call this function on auth request from client.
+
+        You have to check the given username and return the password
+        as return value in this function. The server will check the
+        value und will set 'is_auth' to True in the CmdClientInfo
+        object.
+
+        :param client: Remote client information
+        :param username: Given username from the client request
+        :return: The right password as string or empty string to reject
+        """
         return ""
 
     def connect(self, client: CmdClientInfo) -> bool:
+        """
+        A new client is connected to the server.
+
+        :param client: Remote client information
+        :return: True to accept the connection, False to reject the client
+        """
         return True
 
     def disconnect(self, client: CmdClientInfo, clean: bool) -> None:
+        """
+        A client disconnects from the server.
+
+        :param client: Remote client information
+        :param clean: True, if client send disconnect request, False on failure
+        """
         pass
 
 
