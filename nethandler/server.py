@@ -270,6 +270,7 @@ class CmdServer(Thread):
                 th.start()
                 self._th_clients.append(th)
             else:
+                client_sock.shutdown(SHUT_RDWR)
                 client_sock.close()
                 log.warning(
                     "Host ip '{0}' does not match any acl entry - disconnect"
@@ -301,7 +302,7 @@ class CmdServer(Thread):
                 # Free from accept function to prevent new connections
                 self._so.shutdown(SHUT_RDWR)
             except Exception as e:
-                log.exception(e)
+                log.debug(e)
 
         # Thread will disconnect all clients on the end of mainloop
         self.join(timeout=3)
@@ -412,7 +413,7 @@ class CmdConnection(Thread):
                 self.__acl, self.__connected_since, self.__is_auth,
                 self.__data,
             )
-            if self.__cmd.connect(client) is False:
+            if self.__cmd.connect(client) != True:
                 log.warning("connect function does not return True - disconnect")
                 self.__evt_exit.set()
         except Exception as e:
@@ -584,6 +585,7 @@ class CmdConnection(Thread):
             log.exception(e)
 
         self.__connected = False
+        self.__con.shutdown(SHUT_RDWR)
         self.__con.close()
 
         log.info("disconnected from {0}".format(self.__addr))

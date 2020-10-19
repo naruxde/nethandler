@@ -6,7 +6,7 @@ __license__ = "GPLv3"
 
 from hashlib import sha256
 from pickle import dumps, loads
-from socket import error as socketerror
+from socket import SHUT_RDWR, error as socketerror
 from struct import pack, unpack
 from threading import Event, Lock, Thread
 
@@ -318,8 +318,6 @@ class CmdClient:
         # Thread will send a disconnect to server on the end
         self.__th_run.join()
 
-        self.__con.close()
-
     def get_functions(self) -> list:
         """
         Get a list of all functions available on the server.
@@ -388,9 +386,13 @@ class CmdClient:
         try:
             self.__sock_lock.acquire(timeout=self.__wait_sync)
             self.__con.sendall(SYS_EXIT)
+            self.__con.shutdown(SHUT_RDWR)
         except Exception:
             pass
-        self.__sock_lock.release()
+        if self.__sock_lock.locked():
+            self.__sock_lock.release()
+
+        self.__con.close()
 
     def start(self, connect_async=False):
         """
