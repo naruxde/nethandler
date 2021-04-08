@@ -140,6 +140,9 @@ class CmdClient:
             # Response of auth request
             rc, = unpack("<?7x", blob)
 
+        else:
+            raise RuntimeError("net cmd in server response unknown: {0}".format(cmd))
+
         return rc
 
     def __set_systimeout(self, timeout_ms):

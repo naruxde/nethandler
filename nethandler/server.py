@@ -20,6 +20,43 @@ from .helper import HEADER_START, HEADER_STOP, HandlerSocket, acheck
 log = getLogger()
 
 
+class RawReturnObject:
+    """Raw return object for blob and payload"""
+
+    def __init__(self, blob: b'', payload=b''):
+        self.blob = blob
+        self.payload = payload
+
+    @property
+    def blob(self) -> bytes:
+        """Get the blob of object."""
+        return self._blob
+
+    @blob.setter
+    def blob(self, value: bytes) -> None:
+        """Set the blob of object, size will be set to 8."""
+        if not type(value) == bytes:
+            raise TypeError("The blob must be <class 'bytes'>")
+        value_length = len(value)
+        if value_length > 8:
+            raise ValueError("The blob max length is 8 byte")
+
+        self._blob = value + b'\x00' * (8 - value_length)
+
+    @property
+    def payload(self) -> bytes:
+        """Payload of object."""
+        return self._payload
+
+    @payload.setter
+    def payload(self, value: bytes) -> None:
+        """Set bytes as payload for this object."""
+        if type(value) == bytes:
+            self._payload = value
+        else:
+            raise TypeError("The payload must be <class 'bytes'>")
+
+
 class _RegisterType(Enum):
     """Register types for cmd functions."""
 
@@ -104,8 +141,9 @@ class CmdHandler:
 class CmdServer(Thread):
     """Network command server."""
 
-    def __init__(self, ip_acl: AclBase, port: int, bind_ip="", cmd_handler=None):
+    def __init__(self, ip_acl: AclBase, port: int, bind_ip="", cmd_handler=None, default_timeout=5.0):
         acheck(AclBase, ip_acl=ip_acl)
+        acheck(float, default_timeout=default_timeout)
         acheck(int, port=port)
         acheck(str, bind_ip=bind_ip)
         acheck(type, cmd_handler_noneok=cmd_handler)
@@ -118,7 +156,9 @@ class CmdServer(Thread):
         self._bind_ip = bind_ip
         self._cmd_handler = CmdHandler if not cmd_handler else cmd_handler  # type: type
         self._cmd_handler_locked = cmd_handler is not None
+        self._cmd_raw = {}
         self._data = None
+        self._default_timeout = self._default_timeout
         self._port = port
         self._evt_exit = Event()
         self._so = HandlerSocket()
@@ -233,6 +273,32 @@ class CmdServer(Thread):
         """
         self.__register_function(_RegisterType.DISCONNECT, function)
 
+    def register_raw(self, cmd: bytes, function) -> None:
+        """
+        Register a new raw function handler to server.
+
+        A raw function will be called, if the client calls the raw function.
+        Your function must accept a 8 byte blob, which can be used to control
+        the work of your function and a payload as bytes.
+
+        The return value must be bytes, wich will be available on the client.
+
+        :param cmd: Two bytes A-Z / a-z
+        :param function: Function to call on the server
+        """
+        if self.is_alive():
+            raise RuntimeError("can not register functions after server start")
+        if not callable(function):
+            raise RuntimeError("function ist not callable")
+        acheck(bytes, cmd=cmd)
+        if len(cmd) != 2:
+            raise ValueError("parameter cmd must be exact 2 bytes")
+        for char in cmd:
+            if not (65 <= char <= 90 or 97 <= char <= 122):
+                raise ValueError("each byte of cmd must be between a-z and A-Z")
+
+        self._cmd_raw[cmd] = function
+
     def run(self) -> None:
         """Start server to accept connections and handle them."""
         log.debug("enter CmdServer.run()")
@@ -265,7 +331,7 @@ class CmdServer(Thread):
             acl_level = self.__ip_acl.get_level(client_address)
             if acl_level:
                 # Start client thread
-                th = CmdConnection(client_sock, acl_level, self._cmd_handler)
+                th = CmdConnection(client_sock, acl_level, self._cmd_handler, self._cmd_raw, self._default_timeout)
                 th.set_data_object(self._data)
                 th.start()
                 self._th_clients.append(th)
@@ -325,7 +391,7 @@ class CmdServer(Thread):
 class CmdConnection(Thread):
     """Handle connection to client and do the jobs."""
 
-    def __init__(self, client_socket: HandlerSocket, acl_level: int, cmd_handler: type, timeout=5.0):
+    def __init__(self, client_socket: HandlerSocket, acl_level: int, cmd_handler: type, cmd_raw: dict, timeout=5.0):
         """
         Init CmdHandler class.
 
@@ -336,6 +402,7 @@ class CmdConnection(Thread):
         super().__init__()
         self.__acl = acl_level
         self.__cmd = cmd_handler()
+        self.__cmd_raw = cmd_raw
         self.__con = client_socket
         self.__connected = True
         self.__connected_since = time()
@@ -559,6 +626,30 @@ class CmdConnection(Thread):
                 clean = True
                 self.__evt_exit.set()
                 continue
+
+            elif cmd in self.__cmd_raw:
+                # RAW commands
+                # bCM IIII 00000000 b = 16
+                try:
+                    payload = self.__con.recvall(payload_length, self.__evt_exit)
+                    rc = self.__cmd_raw[cmd](CmdClientInfo(
+                        self.__addr, self.__port,
+                        self.__acl, self.__connected_since, self.__is_auth,
+                        self.__data,
+                    ), blob, payload)  # type: RawReturnObject
+                    if type(rc) != RawReturnObject:
+                        raise RuntimeError(
+                            "Server error: Return value of command {0} must be RawReturnObject".format(cmd)
+                        )
+                except Exception as e:
+                    log.error(str(e))
+                    self.__handle_response(cmd=b'\x06X', )
+                else:
+                    self.__handle_response(
+                        cmd=b'\x06R',
+                        blob=rc.blob,
+                        payload=rc.payload
+                    )
 
             else:
                 # No supported command - disconnect
