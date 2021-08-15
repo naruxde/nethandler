@@ -158,7 +158,7 @@ class CmdServer(Thread):
         self._cmd_handler_locked = cmd_handler is not None
         self._cmd_raw = {}
         self._data = None
-        self._default_timeout = self._default_timeout
+        self._default_timeout = default_timeout
         self._port = port
         self._evt_exit = Event()
         self._so = HandlerSocket()
@@ -374,6 +374,11 @@ class CmdServer(Thread):
         self.join(timeout=3)
 
         log.debug("leave CmdServer.stop()")
+
+    @property
+    def connections(self) -> int:
+        """Get number of connected clients."""
+        return len([cli for cli in self._th_clients if cli.connected])
 
     @property
     def data(self):
